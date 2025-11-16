@@ -11,8 +11,116 @@ from sklearn.metrics import mean_squared_error
 from sklearn.linear_model import LinearRegression
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+#=========================================================
+from sklearn.model_selection import KFold
+# --- 2. Set up K-Fold CV ---
+N_SPLITS = 5
+kfold = KFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
+
+# We will store all results here
+all_results = []
+
+print(f"Starting {N_SPLITS}-Fold Cross-Validation...")
+
+for fold, (train_idx, val_idx) in enumerate(kfold.split(train_df)):
+    print(f"\n--- Processing Fold {fold+1}/{N_SPLITS} ---")
+    
+    # --- 3. Split data for this fold ---
+    train_data = train_df.iloc[train_idx]
+    val_data = train_df.iloc[val_idx]
+
+    # --- 4. "Train" your model (Calculate stats ONLY on train_data) ---
+    print("Calculating statistics for this fold...")
+    ratingMean = train_data['rating'].mean()
+    
+    # Convert to dicts for fast lookup
+    reviewsPerUser = train_data.groupby('userID')['rating'].apply(list).to_dict()
+    usersPerItem = train_data.groupby('bookID')['userID'].apply(set).to_dict()
+    userAverages = train_data.groupby('userID')['rating'].mean().to_dict()
+    itemAverages = train_data.groupby('bookID')['rating'].mean().to_dict()
+
+    # --- 5. Make predictions on the validation set ---
+    print("Making predictions on validation set...")
+    for row in tqdm(val_data.itertuples(), total=len(val_data)):
+        user = row.userID
+        item = row.bookID
+        actual_rating = row.rating
+        
+        # Predict rating
+        pred_rating = predictRating_tuned(
+            user, item, ratingMean,
+            reviewsPerUser, usersPerItem,
+            userAverages, itemAverages
+        )
+        
+        # Store the result
+        all_results.append({
+            'userID': user,
+            'bookID': item,
+            'actual': actual_rating,
+            'predicted': pred_rating,
+            'fold': fold + 1
+        })
+
+print("\nCross-Validation Complete.")
+
+# --- 6. Convert results to a DataFrame for analysis ---
+results_df = pd.DataFrame(all_results)
+
+# It's good practice to clip predictions to the valid 1-5 range
+results_df['predicted_clipped'] = results_df['predicted'].clip(1, 5)
 
 
+
+# --- 1. Calculate Error Metrics ---
+# We'll use Squared Error (for RMSE) and Absolute Error (for MAE)
+results_df['sq_error'] = (results_df['actual'] - results_df['predicted_clipped'])**2
+results_df['abs_error'] = (results_df['actual'] - results_df['predicted_clipped']).abs()
+
+print("\n--- Overall Model Performance ---")
+overall_rmse = np.sqrt(results_df['sq_error'].mean())
+overall_mae = results_df['abs_error'].mean()
+
+print(f"Overall RMSE: {overall_rmse:.4f}")
+print(f"Overall MAE : {overall_mae:.4f}")
+
+# --- 2. THE CORE ANALYSIS: Error by Actual Rating ---
+print("\n--- Error by Actual Rating (The 'Trouble' Report) ---")
+
+# Group by the true rating and calculate the average error
+error_by_rating = results_df.groupby('actual').agg(
+    RMSE=pd.NamedAgg(column='sq_error', aggfunc=lambda x: np.sqrt(x.mean())),
+    MAE=pd.NamedAgg(column='abs_error', aggfunc='mean'),
+    Count=pd.NamedAgg(column='actual', aggfunc='count')
+)
+
+print(error_by_rating)
+
+# --- 3. Visual Analysis (Highly Recommended) ---
+# This gives you an even better intuition.
+# You'll need to install seaborn: pip install seaborn
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    print("\nGenerating visualization...")
+    
+    # A boxplot is perfect for this
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=results_df, x='actual', y='predicted_clipped')
+    plt.title('Predicted Rating vs. Actual Rating')
+    plt.xlabel('Actual Rating (What the user gave)')
+    plt.ylabel('Predicted Rating (What your model guessed)')
+    
+    # Add 'perfect' reference line
+    sns.lineplot(x=[0, 1, 2, 3, 4], y=[1, 2, 3, 4, 5], color='red', linestyle='--', label='Perfect Prediction')
+    plt.legend()
+    plt.show()
+
+except ImportError:
+    print("\nInstall 'seaborn' and 'matplotlib' to get a visual plot of the errors.")
+print("\n--- End of Cross-Validation ---")
+#=================================================================================
 # load train_Interactions.csv
 train_df = pd.DataFrame()
 df = pd.read_csv("train_Interactions.csv")
