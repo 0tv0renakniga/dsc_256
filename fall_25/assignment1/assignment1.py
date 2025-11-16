@@ -17,6 +17,67 @@ from sklearn.preprocessing import StandardScaler
 train_df = pd.DataFrame()
 df = pd.read_csv("train_Interactions.csv")
 
+def predictRating_tuned(user, item, ratingMean, reviewsPerUser, usersPerItem,
+                        userAverages, itemAverages, k_user=5, k_item=20):
+    """
+    Predicts a rating using a regularized baseline model.
+    """
+    mu = ratingMean
+    
+    # calc user bias with k_user
+    num_user_reviews = len(reviewsPerUser.get(user, []))
+    user_avg = userAverages.get(user, mu)
+    b_u_raw = user_avg - mu
+    b_u = b_u_raw * (num_user_reviews / (num_user_reviews + k_user))
+    
+    # calc item bias with k_item
+    num_item_raters = len(usersPerItem.get(item, set()))
+    item_avg = itemAverages.get(item, mu)
+    b_i_raw = item_avg - mu
+    b_i = b_i_raw * (num_item_raters / (num_item_raters + k_item))
+    
+    # calc final rating
+    final_rating = mu + b_u + b_i
+    
+    return final_rating
+df['norm_rating'] = df['rating']/5
+
+ratingMean = df['norm_rating'].mean()
+
+# Calculate user and item average ratings (on the normalized scale)
+userAverages = df.groupby('userID')['norm_rating'].mean().to_dict()
+itemAverages = df.groupby('bookID')['norm_rating'].mean().to_dict()
+
+
+reviewsPerUser = df.groupby('userID')['bookID'].apply(list).to_dict()
+
+# Your function uses len(usersPerItem.get(item, set())), so it needs a set.
+usersPerItem = df.groupby('bookID')['userID'].apply(set).to_dict()
+
+# This is required by the function signature, even if not used in the body.
+itemsPerUser = df.groupby('userID')['bookID'].apply(set).to_dict()
+
+print("Pre-computation complete.")
+test_df = pd.read_csv('predictions_Rating.csv',index=False)
+predictions = []
+for _, row in test_df.iterrows():
+    user = row['userID']
+    item = row['bookID']
+    
+    pred_norm = predictRating_tuned(user, item, ratingMean, reviewsPerUser, usersPerItem,
+                        userAverages, itemAverages, k_user=5, k_item=20)
+    predictions.append(pred_norm)
+
+
+# Add normalized predictions to the DataFrame
+test_df['prediction_normalized'] = predictions
+# Convert normalized prediction back to the 0-5 scale
+test_df['prediction_0_to_5'] = test_df['prediction_normalized'] * 5.0
+
+# Clip the final 0-5 rating to be within the valid range [0, 5]
+test_df['prediction'] = test_df['prediction_0_to_5'].clip(lower=0, upper=5)
+clean_test_df = test_df.loc[:, 'userID','bookID','prediction']
+#=========================================================
 # convert to memory efficent dtypes
 train_df['userID'] = df['userID'].astype('category')
 train_df['bookID'] = df['bookID'].astype('category')
