@@ -13,7 +13,23 @@ from itertools import combinations
 from scipy.optimize import minimize
 import gzip
 from textblob import TextBlob # Requires: pip install textblob
-
+import numpy as np
+import pandas as pd
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import svds
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_squared_error
+from sklearn.decomposition import NMF
+from sklearn.pipeline import make_pipeline  # <--- NEW
+from sklearn.preprocessing import StandardScaler # <--- NEW
+from tqdm import tqdm
+from itertools import combinations
+from scipy.optimize import minimize
+import gzip
+from textblob import TextBlob
 # =============================================================================
 # 1. SIGNAL PROCESSING & FEATURE ENGINEERING
 # =============================================================================
@@ -97,16 +113,11 @@ class FeatureEngineer:
 # =============================================================================
 # 2. ENHANCED HYBRID SCORER
 # =============================================================================
-
 class HybridScorer:
     def __init__(self, n_factors=50, k_neighbors=20, max_features=500, 
                  nmf_components=30, active_models=None):
         """
         Signal-Aware Hybrid Recommender.
-        
-        Updated Hyperparameters:
-        - n_factors: Increased to 50 (from 40) for better SVD resolution.
-        - nmf_components: 30 for parts-based decomposition.
         """
         self.n_factors = n_factors
         self.k = k_neighbors
@@ -131,8 +142,12 @@ class HybridScorer:
         # Signal Processing
         self.fe = FeatureEngineer()
         
-        # Meta Model (Ridge)
-        self.meta_model = Ridge(alpha=1.0, fit_intercept=True, normalize=False)
+        # Meta Model (Pipeline: Scale -> Ridge)
+        # Replaces deprecated normalize=True/False
+        self.meta_model = make_pipeline(
+            StandardScaler(), 
+            Ridge(alpha=1.0, fit_intercept=True)
+        )
         
     def fit(self, df):
         """Train base models and feature engineer."""
@@ -143,7 +158,7 @@ class HybridScorer:
         print("\n1. Initializing & Feature Engineering...")
         self.global_mean = df['hours_transformed'].mean()
         
-        # Fit Signal Engineer (Compute User Lorentz profiles)
+        # Fit Signal Engineer
         self.fe.fit(df)
         
         # Standard Mappings
@@ -196,14 +211,11 @@ class HybridScorer:
         
         # --- MODEL E: NMF ---
         print("\n6. Training Model E (NMF)...")
-        # NMF on dense sample (warning: high memory usage on full dataset)
-        # Using a subset or sparse NMF is recommended for production
         try:
             nmf = NMF(n_components=self.nmf_components, init='nndsvd', max_iter=100, random_state=42)
-            self.nmf_user = nmf.fit_transform(self.R) # Sparse input supported in newer sklearn
+            self.nmf_user = nmf.fit_transform(self.R)
             self.nmf_item = nmf.components_.T
         except:
-            # Fallback for older sklearn versions requiring dense
             print("   (Switching to dense NMF - High Memory)")
             R_dense = self.R.toarray()
             self.nmf_user = nmf.fit_transform(R_dense)
@@ -212,7 +224,6 @@ class HybridScorer:
         print("\n✓ Base models trained.")
 
     def _get_individual_preds(self, u_idx, i_idx):
-        """Get predictions [pA, pB, pC, pD, pE] for a known user/item index."""
         preds = []
         
         # A: SVD
@@ -230,7 +241,6 @@ class HybridScorer:
         u_vec = self.R[u_idx]
         if u_vec.nnz > 0:
             sim_row = self.sim_ii[i_idx]
-            # Efficient sparse dot product
             pC = (u_vec @ sim_row.T).toarray()[0][0] / (np.abs(sim_row).sum() + 1e-9)
             if pC == 0: pC = self.global_mean
         else: pC = self.global_mean
@@ -246,10 +256,6 @@ class HybridScorer:
         return preds
 
     def _get_base_preds_and_signals(self, df):
-        """
-        Generate feature matrix X for the Meta-Model.
-        X consists of [Base_Model_Preds | Signal_Features]
-        """
         # 1. Base Model Predictions
         X_models = []
         y_true = []
@@ -260,20 +266,18 @@ class HybridScorer:
                 u_idx = self.user_map[row.userID]
                 i_idx = self.item_map[row.gameID]
                 X_models.append(self._get_individual_preds(u_idx, i_idx))
-                # For test set, y_true might not exist
                 if hasattr(row, 'hours_transformed'):
                     y_true.append(row.hours_transformed)
                 else:
                     y_true.append(0)
             else:
-                # Cold start fallback
                 X_models.append([self.global_mean] * 5)
                 y_true.append(0)
                 
         X_models = np.array(X_models)
         y_true = np.array(y_true)
         
-        # 2. Signal Features (Vectorized)
+        # 2. Signal Features
         print("   Generating signal features...")
         df_signals = self.fe.transform(df)
         X_signals = df_signals.values
@@ -284,7 +288,6 @@ class HybridScorer:
         return X_full, y_true
 
     def learn_weights(self, val_df):
-        """Train the Ridge Meta-Model on stacked features."""
         print("\n" + "="*60)
         print("LEARNING META-MODEL WEIGHTS")
         print("="*60)
@@ -301,8 +304,11 @@ class HybridScorer:
         signal_names = self.fe.signal_cols
         all_names = model_names + signal_names
         
+        # FIX: Access coefficients from the Ridge step of the pipeline
+        ridge_model = self.meta_model.named_steps['ridge']
+        
         print("\nLearned Weights:")
-        for name, w in zip(all_names, self.meta_model.coef_):
+        for name, w in zip(all_names, ridge_model.coef_):
             print(f"  {name:15s}: {w:.4f}")
             
         preds = self.meta_model.predict(X_stack)
@@ -311,10 +317,6 @@ class HybridScorer:
         return mse
 
     def find_best_model_subset(self, val_df, verbose=True):
-        """
-        Optimization wrapper.
-        Note: We keep Signals ALWAYS active. We only permute the 5 Base Models.
-        """
         print("\n" + "="*60)
         print("OPTIMIZING BASE MODEL SUBSET")
         print("="*60)
@@ -327,16 +329,13 @@ class HybridScorer:
         best_mse = float('inf')
         best_subset = list(range(n_base))
         
-        # Iterate all combinations of base models
         for r in range(1, n_base + 1):
             for subset in combinations(range(n_base), r):
                 subset = list(subset)
-                
-                # Construct feature matrix: [Selected_Models | Signals]
                 X_sub = np.hstack([X_models[:, subset], X_signals])
                 
-                # Quick Ridge Fit
-                clf = Ridge(fit_intercept=True)
+                # Use pipeline here too for consistency
+                clf = make_pipeline(StandardScaler(), Ridge(fit_intercept=True))
                 clf.fit(X_sub, y_true)
                 preds = clf.predict(X_sub)
                 mse = mean_squared_error(y_true, preds)
@@ -352,34 +351,25 @@ class HybridScorer:
         return {'best_subset': best_subset}
 
     def make_test_predictions(self, test_df, output_path='predictions_Hours.csv'):
-        """Predict using the final stacked model."""
         print(f"\nGenerating predictions for {len(test_df)} pairs...")
         
-        # Get full features (Models + Signals)
-        # Note: we need to handle the active_subset logic manually here
         X_full, _ = self._get_base_preds_and_signals(test_df)
-        
-        # Extract components
         n_base = 5
         X_models = X_full[:, :n_base]
         X_signals = X_full[:, n_base:]
         
-        # Filter by active subset
         if self.active_models is not None:
             X_models = X_models[:, self.active_models]
             
-        # Re-stack
         X_final = np.hstack([X_models, X_signals])
         
-        # Predict
         preds = self.meta_model.predict(X_final)
-        preds = np.clip(preds, 0, 14.5) # Clip to valid range
+        preds = np.clip(preds, 0, 14.5)
         
         sub = test_df[['userID', 'gameID']].copy()
         sub['prediction'] = preds
         sub.to_csv(output_path, index=False)
         print(f"✓ Saved to {output_path}")
-
 # =============================================================================
 # 3. PIPELINE UTILS
 # =============================================================================
