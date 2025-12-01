@@ -20,9 +20,14 @@ class ContentEngine:
     Treats every game as a 'document' (collection of all its reviews).
     Treats every user as a 'query' (average of the games they played).
     """
-    def __init__(self, max_features=1000):
+    def __init__(self, max_features=3000):
         # Increased features slightly for better resolution
-        self.vectorizer = TfidfVectorizer(stop_words='english', max_features=max_features)
+        self.vectorizer = TfidfVectorizer(
+            stop_words='english',
+            ngram_range=(1, 3),  
+            max_features=max_features,
+            min_df=5  # Ignore typos/rare words to save space
+        )
         self.game_vectors = None
         self.user_profiles = {}
         self.game_map = {}
