@@ -1,15 +1,17 @@
+#====================================================================
+# rating prediction                                                 =
+#====================================================================
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
 def predictRating(user, item, ratingMean, reviewsPerUser, usersPerItem, 
                   itemsPerUser, userAverages, itemAverages):
-    """
-    Standard Regularized Baseline:
-    Prediction = mu + b_u + b_i
-    """
-    # --- This is the logic from your provided function body ---
-    k = 5 # Using the k=5 hardcoded from your example
+    
+    #prediction = mu + b_u + b_i
+    
+    # rating centered around mean and shifts via user/book bais
+    k = 5 
     mu = ratingMean
     
     # calc user bias (b_u)
@@ -28,23 +30,22 @@ def predictRating(user, item, ratingMean, reviewsPerUser, usersPerItem,
     final_rating = mu + b_u + b_i
     
     return final_rating
-    # --- End of your function logic ---
 
-# 1. Read Training Data
-print("Loading train_Interactions.csv...")
+# read training data
+print("read train_Interactions.csv...")
 df = pd.read_csv("train_Interactions.csv")
 
-# 2. Make Features from Training Set
-print("Calculating statistics (this may take a moment)...")
+# make features from training Set
+print("calc statistics ...")
 
-# Global average rating
+# calc average rating
 ratingMean = df['rating'].mean()
 
-# Average rating for each user and item
+# get average rating feature for each user and item
 userAverages = df.groupby('userID')['rating'].mean().to_dict()
 itemAverages = df.groupby('bookID')['rating'].mean().to_dict()
 
-# Interaction counts/lists for regularization
+# get interaction counts/lists for regularization
 reviewsPerUser = df.groupby('userID')['bookID'].apply(list).to_dict()
 usersPerItem = df.groupby('bookID')['userID'].apply(set).to_dict()
 
@@ -53,20 +54,20 @@ itemsPerUser = df.groupby('userID')['bookID'].apply(set).to_dict()
 
 print("Statistics calculation complete.")
 
-# 3. Read predictions_Rating.csv
-print("Loading predictions_Rating.csv...")
+# read test data
+print("read predictions_Rating.csv...")
 test_df = pd.read_csv('predictions_Rating.csv')
 
-# 4. Make Predictions
-print("Generating predictions...")
+# make predictions on test data
+print("make prediction on test data...")
 predictions = []
 
-# Use tqdm for a progress bar
+# loop over test data
 for row in tqdm(test_df.itertuples(), total=len(test_df)):
     user = row.userID
     item = row.bookID
     
-    # Call your function with all the pre-computed stats
+    # call function with all features
     pred = predictRating(
         user, item, 
         ratingMean, 
@@ -76,66 +77,70 @@ for row in tqdm(test_df.itertuples(), total=len(test_df)):
     )
     predictions.append(pred)
 
-# 5. Write Predictions
-# Add predictions to the dataframe
+# add predictions to the dataframe
 test_df['prediction'] = predictions
 
-# IMPORTANT: Clip predictions to the valid 0-5 range
+# clip predictions to the valid 0-5 range
 test_df['prediction'] = test_df['prediction'].clip(0, 5)
 
-# Save the file in the required format
-# This will OVERWRITE your existing file
+# save csv
 output_cols = ['userID', 'bookID', 'prediction']
 test_df[output_cols].to_csv('predictions_Rating.csv', index=False)
 
-print("\nDone. 'predictions_Rating.csv' has been updated with new predictions.")
+print("\nrating prediction done")
+#====================================================================
+#                                                                   =
+#====================================================================
 
+#====================================================================
+# read prediction                                                   =
+#====================================================================
 import pandas as pd
 import statsmodels.api as sm
 from sklearn.model_selection import train_test_split
 import numpy as np
 
-# Load the data
+# read training data
 df = pd.read_csv('train_Interactions.csv')
 
-# Create binary label: 1 if rating > 0 (read), 0 otherwise (not read)
+# create binary label: 1 if rating > 0 (read), 0 otherwise (not read)
 df['read'] = (df['rating'] > 0).astype(int)
 
-# Compute user-level features
+# calc user-level features
 user_stats = df.groupby('userID').agg(
     user_read_rate=('read', 'mean'),
     user_num_books=('bookID', 'count')
 ).reset_index()
 
-# Compute book-level features
+# calc book-level features
 book_stats = df.groupby('bookID').agg(
     book_read_rate=('read', 'mean'),
     book_num_users=('userID', 'count')
 ).reset_index()
 
-# Merge features back into the dataframe
+# put features back into the dataframe
 df = df.merge(user_stats, on='userID')
 df = df.merge(book_stats, on='bookID')
 
-# Split into train and test sets
+# split into train and test sets
 train, test = train_test_split(df, test_size=0.2, random_state=42)
 
-# Define features
+# define features
 features = ['user_read_rate', 'user_num_books', 'book_read_rate', 'book_num_users']
 
-# Prepare training data
+# prep training data
 X_train = train[features]
 y_train = train['read']
-X_train = sm.add_constant(X_train)  # Add intercept term
+X_train = sm.add_constant(X_train) 
 
-# Train logistic regression model
+# train logistic regression model
 model = sm.Logit(y_train, X_train)
 result = model.fit()
 
-# Print model summary for interpretation
+# print model summary for interpretation
 print(result.summary())
 
-# Evaluate on test set
+# evaluate on test set
 X_test = test[features]
 y_test = test['read']
 X_test = sm.add_constant(X_test)
@@ -143,27 +148,12 @@ preds = result.predict(X_test)
 acc = ((preds > 0.5).astype(int) == y_test).mean()
 print('Test Accuracy:', acc)
 
-# Baseline: Always predict 1 (read)
 baseline_acc = (y_test == 1).mean()
-print('Baseline Accuracy (always predict 1):', baseline_acc)
+print('baseline accuracy:', baseline_acc)
 
-# Function to predict for a given userID and bookID
+# prediction function for a given userID and bookID
 def predict_read(user_id, book_id, result, df, user_stats, book_stats):
-    """
-    Predicts whether the user has read the book (1) or not (0).
-    
-    Parameters:
-    - user_id: str, the userID
-    - book_id: str, the bookID
-    - result: fitted statsmodels Logit result object
-    - df: pandas DataFrame, the original dataset
-    - user_stats: pandas DataFrame, precomputed user statistics
-    - book_stats: pandas DataFrame, precomputed book statistics
-    
-    Returns:
-    - int: 1 (read) or 0 (not read)
-    """
-    # Retrieve user features; default to global means if unseen
+    # get user features and default to global means if not seen
     user_data = user_stats[user_stats['userID'] == user_id]
     if user_data.empty:
         user_read_rate = df['read'].mean()
@@ -172,7 +162,7 @@ def predict_read(user_id, book_id, result, df, user_stats, book_stats):
         user_read_rate = user_data['user_read_rate'].values[0]
         user_num_books = user_data['user_num_books'].values[0]
     
-    # Retrieve book features; default to global means if unseen
+    # get book features and default to global means if not seen
     book_data = book_stats[book_stats['bookID'] == book_id]
     if book_data.empty:
         book_read_rate = df['read'].mean()
@@ -181,31 +171,26 @@ def predict_read(user_id, book_id, result, df, user_stats, book_stats):
         book_read_rate = book_data['book_read_rate'].values[0]
         book_num_users = book_data['book_num_users'].values[0]
     
-    # Prepare input array (with constant/intercept)
+    # prep input array (with constant/intercept)
     x = np.array([[1.0, user_read_rate, user_num_books, book_read_rate, book_num_users]])
     
-    # Predict probability and threshold
+    # predict probability and threshold
     prob = result.predict(x)[0]
     return int(prob > 0.5)
 
-# Example usage (replace with actual IDs)
-# prediction = predict_read('u67805239', 'b61372131', result, df, user_stats, book_stats)
-# print('Prediction:', prediction)
-
-# 3. Read predictions_Rating.csv
+# read predictions_Rating.csv since it has all the pairs read data
 print("Loading predictions_Rating.csv...")
 test_df = pd.read_csv('predictions_Read.csv')
 
-# 4. Make Predictions
-print("Generating predictions...")
+# make predictions
+print("making predictions...")
 predictions = []
 
-# Use tqdm for a progress bar
 for row in tqdm(test_df.itertuples(), total=len(test_df)):
     user = row.userID
     item = row.bookID
     
-    # Call your function with all the pre-computed stats
+    # make predictions
     pred = predict_read(user, item, result, df, user_stats, book_stats)
     predictRating(
         user, item, 
@@ -216,6 +201,94 @@ for row in tqdm(test_df.itertuples(), total=len(test_df)):
     )
     predictions.append(pred)
 
-# 5. Write Predictions
-# Add predictions to the dataframe
+# add predictions to the dataframe and save as csv
 test_df['prediction'] = predictions
+test_df.to_csv('predictions_Read.csv', index=False)
+print("\nread prediction done")
+#====================================================================
+#                                                                   =
+#====================================================================
+
+#====================================================================
+# cat prediction                                                    =
+#====================================================================
+import pandas as pd
+import re
+
+# rewrote json as csv so wouldn't have to deal with it
+df = pd.read_csv('test_cat_predictions.csv')
+
+# define expanded category keywords 
+keywords = {
+    'children': [
+        'children', 'child', 'kid', 'kids', 'picture book', 'bedtime', 'toddler',
+        'baby', 'preschool', 'kindergarten', 'illustrations', 'board book',
+        'middle grade', 'scary', 'kinderbuch', 'enfant', 'niños', 'bilderbuch'
+    ],
+    'comics_graphic': [
+        'comic', 'comics', 'graphic novel', 'manga', 'anime', 'panel', 'artwork',
+        'illustrator', 'volume', 'visual', 'art', 'strip', 'superhero', 'bande dessinee', 'bd'
+    ],
+    'fantasy_paranormal': [
+        'fantasy', 'paranormal', 'magic', 'wizard', 'witch', 'dragon', 'vampire',
+        'werewolf', 'supernatural', 'fae', 'elf', 'curse', 'ghost', 'demon',
+        'god', 'goddess', 'mythology', 'kingdom', 'prophecy', 'immortal', 
+        'fantasia', 'fantasie', 'sorcerer', 'shifter'
+    ],
+    'mystery_thriller_crime': [
+        'mystery', 'thriller', 'crime', 'murder', 'detective', 'police', 'investigation',
+        'suspense', 'killer', 'suspect', 'spy', 'noir', 'whodunit', 'agent',
+        'case', 'lawyer', 'fbi', 'forensic', 'krimi', 'misterio', 'mystere', 'policier'
+    ],
+    'young_adult': [
+        'young adult', 'ya', 'teen', 'teenager', 'high school', 'romance', 'coming of age',
+        'dystopian', 'dystopia', 'angst', 'love triangle', 'sixteen', 'seventeen',
+        'boyfriend', 'girlfriend', 'crush', 'prom', 'jugendbuch'
+    ]
+}
+
+def predict_category(text):
+    if not isinstance(text, str):
+        return 'fantasy_paranormal' 
+
+    text = text.lower()
+    scores = {cat: 0 for cat in keywords}
+
+    # count keyword occurrences
+    for cat, words in keywords.items():
+        for word in words:
+            if len(word) <= 3:
+                 if re.search(r'\b' + re.escape(word) + r'\b', text):
+                     scores[cat] += 1
+            else:
+                if word in text:
+                    scores[cat] += 1
+
+    # find category with the highest score
+    max_cat = max(scores, key=scores.get)
+    max_val = scores[max_cat]
+
+    # fallback to most frequent in dataset
+    if max_val == 0:
+        return 'fantasy_paranormal'
+    
+    return max_cat
+
+# predict_category uses the expanded freq keyword dictionary 
+df['prediction'] = df['review_text'].apply(predict_category)
+catDict = {
+  "children": 0,
+  "comics_graphic": 1,
+  "fantasy_paranormal": 2,
+  "mystery_thriller_crime": 3,
+  "young_adult": 4
+}
+# save csv
+output_df = df[['user_id', 'review_id', 'prediction']]
+output_df['prediction'] = output_df['prediction'].map(catDict)
+output_df.to_csv('predictions_Category.csv', index=False)
+
+print("Done.. woooo yeah!!!!")
+#====================================================================
+#                                                                   =
+#====================================================================

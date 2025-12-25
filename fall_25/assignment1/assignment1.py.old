@@ -1,0 +1,137 @@
+
+import gzip
+from collections import defaultdict
+import random
+from sklearn.metrics import mean_squared_error, accuracy_score 
+import os
+# Helper function to read the data
+def readCSV(path):
+    f = gzip.open(path, 'rt')
+    f.readline() # Skip header
+    for l in f:
+        u,b,r = l.strip().split(',')
+        yield u,b,int(r)
+
+# =================================================================
+# 1. LOAD AND SPLIT THE DATA
+# =================================================================
+all_ratings = []
+for u, b, r in readCSV("train_Interactions.csv.gz"):
+    all_ratings.append((u, b, r))
+
+# Use the same split as the homework
+train_set = all_ratings[:190000]
+validation_set = all_ratings[190000:]
+
+print(f"Loaded {len(all_ratings)} total interactions.")
+print(f"  -> Training set size: {len(train_set)}")
+print(f"  -> Validation set size: {len(validation_set)}")
+
+# =================================================================
+# 2. "TRAIN" THE PREDICTOR (using ONLY the train_set)
+# =================================================================
+
+# Count book frequency *only* in the training set
+book_counts_train = defaultdict(int)
+for user, book, rating in train_set:
+    book_counts_train[book] += 1
+
+# Sort books by popularity
+all_books_sorted = sorted(book_counts_train.items(), key=lambda item: item[1], reverse=True)
+
+# Find 50% cutoff
+num_unique_books = len(all_books_sorted)
+top_50_percent_count = int(num_unique_books * 0.5)
+
+# Create the predictor set
+top_50_book_set = set(book_id for book_id, count in all_books_sorted[:top_50_percent_count])
+
+print(f"\nPredictor 'trained' on {len(train_set)} samples.")
+print(f"  -> Total unique books in train set: {num_unique_books}")
+print(f"  -> Predictor 'top 50%' set contains: {len(top_50_book_set)} books")
+
+# Define the predictor function
+def predict_top_50_percent(book_id, top_50_set):
+    return 1 if book_id in top_50_set else 0
+
+# =================================================================
+# 3. BUILD THE TEST SET (with negative samples)
+# =================================================================
+
+# We need all books for negative sampling
+all_books_in_data = set(b for u, b, r in all_ratings)
+books_per_user = defaultdict(set)
+for u, b, r in all_ratings:
+    books_per_user[u].add(b)
+
+X_test = [] # The bookID
+y_true = [] # The true label (1 for read, 0 for not-read)
+
+# Add positive samples from the validation set
+for u, b, r in validation_set:
+    X_test.append(b)
+    y_true.append(1)
+
+# Add negative samples (this mirrors 'generateValidation')
+for u, b, r in validation_set:
+    # Find a book this user has *not* read
+    unread_books = all_books_in_data - books_per_user[u]
+    if unread_books:
+        # Sample one random unread book
+        negative_book = random.choice(list(unread_books))
+        X_test.append(negative_book)
+        y_true.append(0)
+
+print(f"\nCreated a test set with {len(y_true)} samples.")
+print(f"  -> {y_true.count(1)} positive samples")
+print(f"  -> {y_true.count(0)} negative samples")
+
+# =================================================================
+# 4. EVALUATE WITH SKLEARN
+# =================================================================
+
+# Make predictions on the test set
+y_pred = [predict_top_50_percent(book_id, top_50_book_set) for book_id in X_test]
+
+# Calculate and print metrics
+mse = mean_squared_error(y_true, y_pred)
+accuracy = accuracy_score(y_true, y_pred)
+
+print("\n--- Model Evaluation ---")
+print(f"  sklearn.metrics.mean_squared_error: {mse:.4f}")
+print(f"  sklearn.metrics.accuracy_score:     {accuracy:.4f} (or {accuracy*100:.2f}%)")
+print(os.system("for i in $(ls $(pwd)/*.py); do echo $i; done"))
+print("\nAs you can see, accuracy is more interpretable.")
+print(f"This model is correct {accuracy*100:.2f}% of the time on our test set.")
+print(y_pred)
+predictions = open("predictions_Read.csv", 'w')
+for l in open("pairs_Read.csv"):
+  if l.startswith("userID"):
+    # Write the header
+    predictions.write(l)
+    continue
+  u,b = l.strip().split(',')
+  
+  # This is where you generate y_pred
+  if u in userAverage:
+    y_pred = userAverage[u]
+  else:
+    y_pred = globalAverage
+  
+  # Write the user, book, and y_pred to the file
+  predictions.write(u + ',' + b + ',' + str(y_pred) + '\n')
+
+predictions.close()
+predictions = open("predictions_Read.csv", 'w')
+for l in open("pairs_Read.csv"):
+  if l.startswith("userID"):
+    #header
+    predictions.write(l)
+    continue
+  u,b = l.strip().split(',')
+  if b in return1:
+    predictions.write(u + ',' + b + ",1\n")
+  else:
+    predictions.write(u + ',' + b + ",0\n")
+
+predictions.close()

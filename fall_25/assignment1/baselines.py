@@ -38,7 +38,7 @@ for l in open("pairs_Rating.csv"):
   else:
     predictions.write(u + ',' + b + ',' + str(globalAverage) + '\n')
 
-predictions.close()
+predictions.close() 
 
 ### Would-read baseline: just rank which books are popular and which are not, and return '1' if a book is among the top-ranked
 
@@ -83,7 +83,8 @@ catDict = {
   "mystery_thriller_crime": 3,
   "young_adult": 4
 }
-
+mtc = ['crime-mystery']
+kids = ['kid']
 predictions = open("predictions_Category.csv", 'w')
 predictions.write("userID,reviewID,prediction\n")
 for l in readGz("test_Category.json.gz"):
